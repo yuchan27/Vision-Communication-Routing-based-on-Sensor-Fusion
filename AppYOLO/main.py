@@ -5,7 +5,7 @@ from src.inference.infer import YOLOInfer
 
 
 
-infer = YOLOInfer("models/release.pt")
+infer = YOLOInfer("models/release26.pt")
 
 real_image_path = "test/left1.png"       
 
@@ -23,7 +23,7 @@ print("解釋:", decision["explainability"]["trace_message"])
 
  
 result = infer.run(
-    "test/forest1.avi",  
+    "test/dataset/forest1.avi",  
     save_path="outputs/out.mp4",
     with_decision=True      
 )

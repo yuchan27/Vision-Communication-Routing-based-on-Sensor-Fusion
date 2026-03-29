@@ -43,7 +43,7 @@ if __name__ == "__main__":
     with open(map_json_path, "r", encoding="utf-8") as f:
         map_data = json.load(f)
     
-    infer = YOLOInfer("models/release.pt")
+    infer = YOLOInfer("models/release11.pt")
     
     results = {}
     file_list = list(map_data.keys())
@@ -100,7 +100,7 @@ if __name__ == "__main__":
     
     orig_h, orig_w = sample_img.shape[:2]
     
-    # ====================== 固定尺寸設定 ======================
+
     MAP_SIZE = 1000           
     MONITOR_WIDTH = 250      
     NUM_MONITORS_PER_ROW = 4  
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     # 1. 貼上地圖
     canvas[0:map_h, 0:map_w] = map_img
     
-    # 2. 監視器畫面 → 改成「一排四張」（目前正好 4 張 → 單行）
+    # 2. 監視器畫面 
     order = ["left1.png", "mid.jpg", "right1.png", "right2.jpg"]
     monitor_offset_x = 0   # 因為 4*250 = 1000，正好填滿整行
     grid_y = map_h
