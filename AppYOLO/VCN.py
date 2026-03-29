@@ -43,7 +43,7 @@ if __name__ == "__main__":
     with open(map_json_path, "r", encoding="utf-8") as f:
         map_data = json.load(f)
     
-    infer = YOLOInfer("models/release11.pt")
+    infer = YOLOInfer("models/release11-2.pt")
     
     results = {}
     file_list = list(map_data.keys())
