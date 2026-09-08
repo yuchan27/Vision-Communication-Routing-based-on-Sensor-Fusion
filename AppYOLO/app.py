@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import threading
 import time
 import uuid
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any, Deque, Optional
 
 import cv2
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,15 @@ except Exception:  # pragma: no cover
 from src.inference.infer import YOLOInfer
 from src.pipeline_service import run_main_pipeline, run_vcn_pipeline
 from src.inference.utils import convert_to_yolo_format
+from src.api_contract import (
+    IMAGE_SUFFIXES,
+    VIDEO_SUFFIXES,
+    build_temperature_observation,
+    format_sse,
+    parse_optional_temperature,
+    validate_upload_filename,
+    validate_upload_size,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -36,8 +46,31 @@ UPLOAD_DIR = OUTPUT_DIR / "uploads"
 OUTPUT_IMAGE_DIR = OUTPUT_DIR / "images"
 OUTPUT_VIDEO_DIR = OUTPUT_DIR / "videos"
 LIVE_LOG_DIR = OUTPUT_DIR / "live_logs"
-ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
-ALLOWED_VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v"}
+ALLOWED_IMAGE_SUFFIXES = IMAGE_SUFFIXES
+ALLOWED_VIDEO_SUFFIXES = VIDEO_SUFFIXES
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+MAX_IMAGE_UPLOAD_BYTES = _env_positive_int(
+    "FIRE_MAX_IMAGE_UPLOAD_BYTES", 15 * 1024 * 1024
+)
+MAX_VIDEO_UPLOAD_BYTES = _env_positive_int(
+    "FIRE_MAX_VIDEO_UPLOAD_BYTES", 250 * 1024 * 1024
+)
+
+
+def _allowed_origins() -> list[str]:
+    configured = os.getenv("FIRE_ALLOWED_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return ["http://127.0.0.1:8000", "http://localhost:8000"]
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -107,12 +140,24 @@ LIVE_TRACKER = LiveTracker()
 class LocalImageRequest(BaseModel):
     image_path: str = Field(..., description="Relative path under workspace")
     save_annotated: bool = True
+    sensor_temperature_celsius: Optional[float] = Field(
+        default=None,
+        ge=-50,
+        le=200,
+        description="Optional calibrated scene temperature from a radiometric thermal sensor",
+    )
 
 
 class LocalVideoRequest(BaseModel):
     video_path: str = Field(..., description="Relative path under workspace")
     output_video_path: str = Field(default="outputs/out.mp4", description="Output path under workspace")
     with_decision: bool = True
+    sensor_temperature_celsius: Optional[float] = Field(
+        default=None,
+        ge=-50,
+        le=200,
+        description="Optional synchronized scene temperature from a radiometric thermal sensor",
+    )
 
 
 class MainPipelineRequest(BaseModel):
@@ -182,6 +227,74 @@ def _to_relative_workspace_path(path: Path) -> str:
 def _to_output_url(path: Path) -> str:
     rel = path.relative_to(OUTPUT_DIR).as_posix()
     return f"/outputs/{rel}"
+
+
+def _validate_upload_suffix(
+    filename: Optional[str],
+    allowed_suffixes: set[str] | frozenset[str],
+    kind: str,
+) -> str:
+    try:
+        return validate_upload_filename(filename, allowed_suffixes, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _parse_sensor_temperature(value: Any) -> Optional[float]:
+    try:
+        return parse_optional_temperature(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _temperature_metadata(
+    *,
+    rgb_temperature_celsius: Any,
+    sensor_temperature_celsius: Any = None,
+    host_temperature_celsius: Any = None,
+    host_temperature_source: str = "unavailable",
+) -> dict[str, Any]:
+    return build_temperature_observation(
+        rgb_temperature_celsius=rgb_temperature_celsius,
+        sensor_temperature_celsius=sensor_temperature_celsius,
+        host_temperature_celsius=host_temperature_celsius,
+        host_temperature_source=host_temperature_source,
+    )
+
+
+async def _save_upload_with_limit(
+    file: UploadFile,
+    destination: Path,
+    max_bytes: int,
+    kind: str,
+) -> int:
+    """Stream an upload to disk and reject it before it grows past its limit."""
+
+    total_bytes = 0
+    try:
+        with destination.open("wb") as target:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                try:
+                    validate_upload_size(total_bytes, max_bytes, kind)
+                except ValueError as exc:
+                    raise HTTPException(status_code=413, detail=str(exc)) from exc
+                target.write(chunk)
+    except HTTPException:
+        destination.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Unable to store uploaded {kind}") from exc
+
+    if total_bytes == 0:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Uploaded {kind} file is empty")
+
+    return total_bytes
 
 
 def _guess_file_kind(path: Path) -> str:
@@ -264,6 +377,7 @@ def _build_video_telemetry(video_results: list[dict[str, Any]], max_points: int 
             "avg_risk": 0.0,
             "max_temperature": 0.0,
             "avg_temperature": 0.0,
+            "temperature_sources": [],
         }
 
     sample_step = max(1, (len(video_results) + max_points - 1) // max_points)
@@ -271,14 +385,23 @@ def _build_video_telemetry(video_results: list[dict[str, Any]], max_points: int 
 
     risk_values: list[float] = []
     temp_values: list[float] = []
+    temperature_sources: set[str] = set()
 
     for idx, item in enumerate(video_results):
         decision_full = item.get("decision", {})
         decision = decision_full.get("decision", {}) if isinstance(decision_full, dict) else {}
 
         risk_score = float(decision.get("risk_score", 0.0) or 0.0)
-        vision_temp = item.get("vision_temp")
-        temp_value = float(vision_temp) if vision_temp is not None else 0.0
+        scene_temp = item.get("scene_temperature_celsius")
+        if scene_temp is None:
+            scene_temp = item.get("vision_temp")
+        temp_value = float(scene_temp) if scene_temp is not None else 0.0
+        temp_source = str(
+            item.get("scene_temperature_source")
+            or item.get("temperature_source")
+            or "ambient_fallback"
+        )
+        temperature_sources.add(temp_source)
         detection_count = len(item.get("detections", []) or [])
 
         risk_values.append(risk_score)
@@ -291,7 +414,9 @@ def _build_video_telemetry(video_results: list[dict[str, Any]], max_points: int 
                     "frame_id": frame_id_val,
                     "time_sec": round(frame_id_val / 30.0, 2),
                     "risk_score": risk_score,
-                    "vision_temperature_celsius": temp_value,
+                    "vision_temperature_celsius": item.get("vision_temp"),
+                    "scene_temperature_celsius": temp_value,
+                    "temperature_source": temp_source,
                     "detection_count": detection_count,
                     "trigger_alarm": bool(decision.get("trigger_alarm", False)),
                     "suggested_action": decision.get("suggested_action", "CONTINUE_MONITORING"),
@@ -304,6 +429,7 @@ def _build_video_telemetry(video_results: list[dict[str, Any]], max_points: int 
         "avg_risk": (sum(risk_values) / len(risk_values)) if risk_values else 0.0,
         "max_temperature": max(temp_values) if temp_values else 0.0,
         "avg_temperature": (sum(temp_values) / len(temp_values)) if temp_values else 0.0,
+        "temperature_sources": sorted(temperature_sources),
     }
 
 
@@ -399,7 +525,17 @@ def _normalize_system_temperature(raw_temp: Optional[float], source: str) -> Opt
         return LIVE_TRACKER.normalized_system_temp
 
 
-def _build_payload(engine: YOLOInfer, result: Any, frame_id: int, vision_temp: Optional[float]) -> dict[str, Any]:
+def _build_payload(
+    engine: YOLOInfer,
+    result: Any,
+    frame_id: int,
+    vision_temp: Optional[float],
+    sensor_temperature_celsius: Optional[float] = None,
+) -> dict[str, Any]:
+    temperature = _temperature_metadata(
+        rgb_temperature_celsius=vision_temp,
+        sensor_temperature_celsius=sensor_temperature_celsius,
+    )
     return {
         "context": {
             "timestamp": _utc_now_iso(),
@@ -408,7 +544,9 @@ def _build_payload(engine: YOLOInfer, result: Any, frame_id: int, vision_temp: O
         "perceptions": {
             "visual_objects": engine.image_infer._to_yolo_format_str(result),
             "environmental_sensors": {
-                "temperature_celsius": vision_temp if vision_temp is not None else 25.0,
+                "temperature_celsius": temperature["scene_temperature_celsius"],
+                "temperature_source": temperature["scene_temperature_source"],
+                "temperature_calibrated": temperature["scene_temperature_calibrated"],
             },
         },
     }
@@ -423,6 +561,9 @@ def _append_live_log(log_path: str, metrics: dict[str, Any]) -> None:
         "frame_id": int(metrics.get("frame_id", 0)),
         "risk_score": float(metrics.get("risk_score", 0.0)),
         "vision_temperature_celsius": float(metrics.get("vision_temperature_celsius") or 0.0),
+        "scene_temperature_celsius": float(metrics.get("scene_temperature_celsius") or 0.0),
+        "scene_temperature_source": metrics.get("scene_temperature_source", "ambient_fallback"),
+        "scene_temperature_calibrated": bool(metrics.get("scene_temperature_calibrated", False)),
         "system_temperature_celsius": metrics.get("system_temperature_celsius"),
         "system_temperature_source": metrics.get("system_temperature_source", "unavailable"),
         "fps": float(metrics.get("fps", 0.0)),
@@ -456,19 +597,18 @@ def _run_frame_inference(
     detections = convert_to_yolo_format(result)
     flame_temp = engine.image_infer.temp_estimator._estimate_temperature_from_frame(frame_for_infer, result)
     raw_system_temp, system_temp_source = _read_system_temperature_celsius()
+    _normalize_system_temperature(raw_system_temp, system_temp_source)
 
-    if raw_system_temp is None and flame_temp is not None:
-        raw_system_temp = float(flame_temp)
-        system_temp_source = "vision-fallback"
+    # Host/CPU temperature is diagnostic only. The decision engine receives the
+    # RGB scene estimate until a calibrated thermal frame is supplied.
+    temperature = _temperature_metadata(
+        rgb_temperature_celsius=flame_temp,
+        host_temperature_celsius=raw_system_temp,
+        host_temperature_source=system_temp_source,
+    )
+    effective_temp = temperature["scene_temperature_celsius"]
 
-    normalized_system_temp = _normalize_system_temperature(raw_system_temp, system_temp_source)
-
-    # Use normalized computer thermal reading when available, keeping it around room-temperature baseline.
-    effective_temp = normalized_system_temp
-    if effective_temp is None:
-        effective_temp = ROOM_TEMP_TARGET_C
-
-    payload = _build_payload(engine, result, frame_id, effective_temp)
+    payload = _build_payload(engine, result, frame_id, flame_temp)
     decision_full = engine.image_infer.decision_engine.evaluate_payload(payload)
     decision = decision_full.get("decision", {})
 
@@ -485,7 +625,11 @@ def _run_frame_inference(
         "detections": detections,
         "detection_count": len(detections),
         "class_breakdown": dict(class_breakdown),
-        "vision_temperature_celsius": effective_temp,
+        "vision_temperature_celsius": flame_temp,
+        "scene_temperature_celsius": effective_temp,
+        "scene_temperature_source": temperature["scene_temperature_source"],
+        "scene_temperature_calibrated": temperature["scene_temperature_calibrated"],
+        "temperature": temperature,
         "flame_temperature_celsius": flame_temp,
         "system_temperature_celsius": raw_system_temp,
         "system_temperature_source": system_temp_source,
@@ -534,7 +678,13 @@ def _stop_live_worker(timeout: float = 3.0) -> None:
         LIVE_TRACKER.running = False
 
 
-def _live_worker(source: str, conf: float, frame_skip: int, max_frame_width: int) -> None:
+def _live_worker(
+    source: str,
+    display_source: str,
+    conf: float,
+    frame_skip: int,
+    max_frame_width: int,
+) -> None:
     engine = INFER_ENGINE
     if engine is None:
         with LIVE_TRACKER.lock:
@@ -546,12 +696,12 @@ def _live_worker(source: str, conf: float, frame_skip: int, max_frame_width: int
     if not cap.isOpened():
         with LIVE_TRACKER.lock:
             LIVE_TRACKER.running = False
-            LIVE_TRACKER.last_error = f"Unable to open source: {source}"
+            LIVE_TRACKER.last_error = f"Unable to open source: {display_source}"
         return
 
     with LIVE_TRACKER.lock:
         LIVE_TRACKER.running = True
-        LIVE_TRACKER.source = source
+        LIVE_TRACKER.source = display_source
         LIVE_TRACKER.last_error = ""
 
     frame_id = 0
@@ -572,7 +722,9 @@ def _live_worker(source: str, conf: float, frame_skip: int, max_frame_width: int
                 cap = _create_capture(source)
                 if not cap.isOpened():
                     with LIVE_TRACKER.lock:
-                        LIVE_TRACKER.last_error = "Camera read failed and reconnect did not recover"
+                        LIVE_TRACKER.last_error = (
+                            f"Source read failed and reconnect did not recover: {display_source}"
+                        )
                     break
 
                 consecutive_failures = 0
@@ -630,8 +782,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allowed_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -664,9 +816,17 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok" if INFER_ENGINE is not None else "degraded",
         "model_ready": INFER_ENGINE is not None,
-        "model_path": str(MODEL_PATH) if MODEL_PATH else "",
+        "model_path": _to_relative_workspace_path(MODEL_PATH) if MODEL_PATH else "",
         "model_error": MODEL_LOAD_ERROR,
         "live_running": LIVE_TRACKER.running,
+        "upload_limits": {
+            "image_bytes": MAX_IMAGE_UPLOAD_BYTES,
+            "video_bytes": MAX_VIDEO_UPLOAD_BYTES,
+        },
+        "temperature_contract": {
+            "scene_source": "thermal_sensor | rgb_estimate | ambient_fallback",
+            "host_temperature_is_diagnostic": True,
+        },
         "timestamp": _utc_now_iso(),
     }
 
@@ -677,7 +837,7 @@ def model_info() -> dict[str, Any]:
     names = engine.image_infer.model.names
     return {
         "status": "ready",
-        "model_path": str(MODEL_PATH) if MODEL_PATH else "",
+        "model_path": _to_relative_workspace_path(MODEL_PATH) if MODEL_PATH else "",
         "classes": names,
     }
 
@@ -788,11 +948,16 @@ def inference_local(payload: LocalImageRequest) -> dict[str, Any]:
                 image_path=str(path),
                 save=payload.save_annotated,
                 frame_id=frame_id,
+                sensor_temperature_celsius=payload.sensor_temperature_celsius,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
 
     class_breakdown = Counter(item.get("class_name", "unknown") for item in detections)
+    temperature = _temperature_metadata(
+        rgb_temperature_celsius=vision_temp,
+        sensor_temperature_celsius=payload.sensor_temperature_celsius,
+    )
 
     annotated_b64 = ""
     annotated_rel_path = ""
@@ -814,6 +979,11 @@ def inference_local(payload: LocalImageRequest) -> dict[str, Any]:
             "detection_count": len(detections),
             "class_breakdown": dict(class_breakdown),
             "vision_temperature_celsius": vision_temp,
+            "scene_temperature_celsius": temperature["scene_temperature_celsius"],
+            "scene_temperature_source": temperature["scene_temperature_source"],
+            "scene_temperature_calibrated": temperature["scene_temperature_calibrated"],
+            "sensor_temperature_celsius": payload.sensor_temperature_celsius,
+            "temperature": temperature,
             "decision": decision_full.get("decision", {}),
             "explainability": decision_full.get("explainability", {}),
             "annotated_image_path": annotated_rel_path,
@@ -824,21 +994,26 @@ def inference_local(payload: LocalImageRequest) -> dict[str, Any]:
 
 
 @app.post("/api/inference/image")
-async def inference_image(file: UploadFile = File(...), save_annotated: bool = True) -> dict[str, Any]:
+async def inference_image(
+    file: UploadFile = File(...),
+    save_annotated: bool = Form(True),
+    sensor_temperature_celsius: Optional[float] = Form(None),
+) -> dict[str, Any]:
     engine = _ensure_engine()
 
-    suffix = Path(file.filename or "upload.jpg").suffix.lower()
-    if suffix not in ALLOWED_IMAGE_SUFFIXES:
-        raise HTTPException(status_code=400, detail="Only jpg/jpeg/png are supported")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    filename = _validate_upload_suffix(file.filename, ALLOWED_IMAGE_SUFFIXES, "image")
+    suffix = Path(filename).suffix.lower()
+    sensor_temperature = _parse_sensor_temperature(sensor_temperature_celsius)
 
     request_id = uuid.uuid4().hex
     temp_name = f"{request_id}{suffix}"
     temp_path = UPLOAD_DIR / temp_name
-    temp_path.write_bytes(content)
+    await _save_upload_with_limit(
+        file,
+        temp_path,
+        MAX_IMAGE_UPLOAD_BYTES,
+        "image",
+    )
 
     frame_id = int(time.time() * 1000) % 1_000_000_000
 
@@ -848,6 +1023,7 @@ async def inference_image(file: UploadFile = File(...), save_annotated: bool = T
                 image_path=str(temp_path),
                 save=save_annotated,
                 frame_id=frame_id,
+                sensor_temperature_celsius=sensor_temperature,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
@@ -858,6 +1034,10 @@ async def inference_image(file: UploadFile = File(...), save_annotated: bool = T
             pass
 
     class_breakdown = Counter(item.get("class_name", "unknown") for item in detections)
+    temperature = _temperature_metadata(
+        rgb_temperature_celsius=vision_temp,
+        sensor_temperature_celsius=sensor_temperature,
+    )
 
     annotated_b64 = ""
     annotated_rel_path = ""
@@ -879,6 +1059,11 @@ async def inference_image(file: UploadFile = File(...), save_annotated: bool = T
             "detection_count": len(detections),
             "class_breakdown": dict(class_breakdown),
             "vision_temperature_celsius": vision_temp,
+            "scene_temperature_celsius": temperature["scene_temperature_celsius"],
+            "scene_temperature_source": temperature["scene_temperature_source"],
+            "scene_temperature_calibrated": temperature["scene_temperature_calibrated"],
+            "sensor_temperature_celsius": sensor_temperature,
+            "temperature": temperature,
             "decision": decision_full.get("decision", {}),
             "explainability": decision_full.get("explainability", {}),
             "annotated_image_path": annotated_rel_path,
@@ -904,6 +1089,7 @@ def inference_video_local(payload: LocalVideoRequest) -> dict[str, Any]:
                 save_path=str(output_path),
                 with_decision=payload.with_decision,
                 display=False,
+                sensor_temperature_celsius=payload.sensor_temperature_celsius,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Video inference failed: {exc}") from exc
@@ -928,6 +1114,7 @@ def inference_video_local(payload: LocalVideoRequest) -> dict[str, Any]:
             "player_url": player_url,
             "frame_count": len(video_results),
             "with_decision": payload.with_decision,
+            "sensor_temperature_celsius": payload.sensor_temperature_celsius,
             "alarm_frame_count": alarm_frames,
             "sample": video_results[0] if video_results else {},
             "telemetry": telemetry,
@@ -939,22 +1126,24 @@ def inference_video_local(payload: LocalVideoRequest) -> dict[str, Any]:
 @app.post("/api/inference/video")
 async def inference_video_upload(
     file: UploadFile = File(...),
-    with_decision: bool = True,
+    with_decision: bool = Form(True),
+    sensor_temperature_celsius: Optional[float] = Form(None),
 ) -> dict[str, Any]:
     engine = _ensure_engine()
 
-    suffix = Path(file.filename or "upload.mp4").suffix.lower()
-    if suffix not in ALLOWED_VIDEO_SUFFIXES:
-        raise HTTPException(status_code=400, detail="Only common video formats are supported")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    filename = _validate_upload_suffix(file.filename, ALLOWED_VIDEO_SUFFIXES, "video")
+    suffix = Path(filename).suffix.lower()
+    sensor_temperature = _parse_sensor_temperature(sensor_temperature_celsius)
 
     request_id = uuid.uuid4().hex
     upload_path = UPLOAD_DIR / f"{request_id}{suffix}"
     output_path = OUTPUT_VIDEO_DIR / f"{request_id}_out.mp4"
-    upload_path.write_bytes(content)
+    await _save_upload_with_limit(
+        file,
+        upload_path,
+        MAX_VIDEO_UPLOAD_BYTES,
+        "video",
+    )
 
     try:
         with INFER_LOCK:
@@ -963,6 +1152,7 @@ async def inference_video_upload(
                 save_path=str(output_path),
                 with_decision=with_decision,
                 display=False,
+                sensor_temperature_celsius=sensor_temperature,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Video inference failed: {exc}") from exc
@@ -992,6 +1182,7 @@ async def inference_video_upload(
             "player_url": player_url,
             "frame_count": len(video_results),
             "with_decision": with_decision,
+            "sensor_temperature_celsius": sensor_temperature,
             "alarm_frame_count": alarm_frames,
             "sample": video_results[0] if video_results else {},
             "telemetry": telemetry,
@@ -1079,16 +1270,34 @@ def live_start(request: LiveStartRequest) -> dict[str, Any]:
     _ensure_engine()
     _stop_live_worker()
 
+    display_source = request.source.strip() or "0"
+    capture_source = display_source
+    if not display_source.isdigit():
+        source_path = _resolve_workspace_path(display_source)
+        if source_path.suffix.lower() not in ALLOWED_VIDEO_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail="Live file sources must use a supported video extension",
+            )
+        capture_source = str(source_path)
+        display_source = _to_relative_workspace_path(source_path)
+
     worker = threading.Thread(
         target=_live_worker,
-        args=(request.source, request.conf, request.frame_skip, request.max_frame_width),
+        args=(
+            capture_source,
+            display_source,
+            request.conf,
+            request.frame_skip,
+            request.max_frame_width,
+        ),
         daemon=True,
         name="live-inference-worker",
     )
 
     with LIVE_TRACKER.lock:
         LIVE_TRACKER.stop_event = threading.Event()
-        LIVE_TRACKER.source = request.source
+        LIVE_TRACKER.source = display_source
         LIVE_TRACKER.latest_metrics = {}
         LIVE_TRACKER.latest_jpeg = None
         LIVE_TRACKER.last_error = ""
@@ -1109,7 +1318,7 @@ def live_start(request: LiveStartRequest) -> dict[str, Any]:
 
     return {
         "status": "started",
-        "source": request.source,
+        "source": display_source,
         "confidence_threshold": request.conf,
         "frame_skip": request.frame_skip,
         "max_frame_width": request.max_frame_width,
@@ -1142,17 +1351,25 @@ def live_frame() -> Response:
 async def live_events() -> StreamingResponse:
     async def event_generator() -> Any:
         last_frame_id = -1
+        last_running: Optional[bool] = None
+        last_error = ""
 
         try:
             while True:
                 state = _public_live_state()
                 frame_id = state.get("latest_metrics", {}).get("frame_id", -1)
+                running = bool(state.get("running", False))
+                error = str(state.get("last_error", ""))
 
-                if frame_id != last_frame_id:
-                    yield f"data: {json.dumps(state, ensure_ascii=False)}\\n\\n"
+                if (
+                    frame_id != last_frame_id
+                    or running != last_running
+                    or error != last_error
+                ):
+                    yield format_sse(state)
                     last_frame_id = frame_id
-                elif not state.get("running", False):
-                    yield f"data: {json.dumps(state, ensure_ascii=False)}\\n\\n"
+                    last_running = running
+                    last_error = error
 
                 await asyncio.sleep(0.25)
         except asyncio.CancelledError:

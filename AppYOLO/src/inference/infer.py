@@ -21,22 +21,29 @@ class YOLOInfer:
         save_path: str | None = None,
         with_decision: bool = False,
         display: bool = True,
+        sensor_temperature_celsius: float | None = None,
     ):
-            if path.lower().endswith((".jpg", ".png", ".jpeg")):
-                return self.image_infer.run(path, save=True)
+        if path.lower().endswith((".jpg", ".png", ".jpeg")):
+            return self.image_infer.run(path, save=True)
 
-            elif path.lower().endswith((".mp4", ".avi", ".mov")):
-                return self.video_infer.run(
-                    path,
-                    save_path,
-                    with_decision=with_decision,
-                    display=display,
-                )
+        if path.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".m4v")):
+            return self.video_infer.run(
+                path,
+                save_path,
+                with_decision=with_decision,
+                display=display,
+                sensor_temperature_celsius=sensor_temperature_celsius,
+            )
 
-            else:
-                raise ValueError(f"Unsupported file format: {path}")
+        raise ValueError(f"Unsupported file format: {path}")
 
-    def run_with_decision(self, image_path: str, save: bool = True, frame_id: int = 0):
+    def run_with_decision(
+        self,
+        image_path: str,
+        save: bool = True,
+        frame_id: int = 0,
+        sensor_temperature_celsius: float | None = None,
+    ):
         """
         【新功能】整合版執行流程（僅支援單張影像）
         1. YOLO 推論
@@ -57,7 +64,8 @@ class YOLOInfer:
         return self.image_infer.run_with_decision(
             image_path=image_path,
             save=save,           # ← 正確傳遞 bool
-            frame_id=frame_id
+            frame_id=frame_id,
+            sensor_temperature_celsius=sensor_temperature_celsius,
         )
 
 

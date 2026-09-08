@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from .utils import convert_to_yolo_format,FireTemperatureEstimator
 from ..decision_engine import SafetyDecisionEngine
+from ..api_contract import build_temperature_observation
 
 
 
@@ -57,7 +58,13 @@ class ImageInfer:
             lines.append(line)
         return "\n".join(lines)
 
-    def run_with_decision(self, image_path, save=True, frame_id=0):
+    def run_with_decision(
+        self,
+        image_path,
+        save=True,
+        frame_id=0,
+        sensor_temperature_celsius=None,
+    ):
         """整合版執行流程（修復參數錯誤）"""
         results = self.model(image_path, verbose=False)
         result = results[0]
@@ -75,6 +82,10 @@ class ImageInfer:
 
         # 2. 這裡修正：傳入 img_frame 而不是 image_path
         vision_temp_c = self.temp_estimator._estimate_temperature_from_frame(img_frame, result)
+        temperature = build_temperature_observation(
+            rgb_temperature_celsius=vision_temp_c,
+            sensor_temperature_celsius=sensor_temperature_celsius,
+        )
 
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         visual_objects_str = self._to_yolo_format_str(result)
@@ -87,8 +98,9 @@ class ImageInfer:
             "perceptions": {
                 "visual_objects": visual_objects_str,
                 "environmental_sensors": {
-                    # 確保如果 vision_temp_c 是 None (沒火)，給予預設值
-                    "temperature_celsius": vision_temp_c if vision_temp_c is not None else 25.4
+                    "temperature_celsius": temperature["scene_temperature_celsius"],
+                    "temperature_source": temperature["scene_temperature_source"],
+                    "temperature_calibrated": temperature["scene_temperature_calibrated"],
                 }
             }
         }

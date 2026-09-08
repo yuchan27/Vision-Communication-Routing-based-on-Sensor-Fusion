@@ -1,0 +1,10 @@
+# Local Ultralytics dataset configuration.
+# Run training/evaluation from the repository root: C:\Code\FIRE
+path: .
+train: data/train/images
+val: data/val/images
+test: data/test/images
+names:
+  0: smoke
+  1: fire
+nc: 2

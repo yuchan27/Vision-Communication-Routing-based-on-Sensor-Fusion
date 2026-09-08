@@ -3,10 +3,12 @@ import cv2
 import time
 import numpy as np
 from datetime import datetime, timezone
+from typing import Optional
 from ultralytics import YOLO
 from ultralytics.utils.plotting import colors
 from .utils import convert_to_yolo_format,FireTemperatureEstimator
 from ..decision_engine import SafetyDecisionEngine
+from ..api_contract import build_temperature_observation
  
  
 
@@ -141,6 +143,7 @@ class VideoInfer:
         device=None,
         with_decision: bool = False,  # 開啟專業儀表板
         display: bool = True,
+        sensor_temperature_celsius: Optional[float] = None,
     ):
         cap = cv2.VideoCapture(video_path)
         all_results = []
@@ -199,6 +202,10 @@ class VideoInfer:
             frame_to_write = annotated
             if with_decision:
                 vision_temp = self.temp_estimator._estimate_temperature_from_frame(frame, result)
+                temperature = build_temperature_observation(
+                    rgb_temperature_celsius=vision_temp,
+                    sensor_temperature_celsius=sensor_temperature_celsius,
+                )
                 timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 visual_objects_str = self._to_yolo_format_str(result)
                 payload = {
@@ -206,7 +213,9 @@ class VideoInfer:
                     "perceptions": {
                         "visual_objects": visual_objects_str,
                         "environmental_sensors": {
-                            "temperature_celsius": vision_temp if vision_temp is not None else 25.4
+                            "temperature_celsius": temperature["scene_temperature_celsius"],
+                            "temperature_source": temperature["scene_temperature_source"],
+                            "temperature_calibrated": temperature["scene_temperature_calibrated"],
                         }
                     }
                 }
@@ -227,6 +236,16 @@ class VideoInfer:
 
                 # 同時把決策資訊存入回傳結果
                 all_results[-1]["vision_temp"] = vision_temp
+                all_results[-1]["scene_temperature_celsius"] = temperature[
+                    "scene_temperature_celsius"
+                ]
+                all_results[-1]["scene_temperature_source"] = temperature[
+                    "scene_temperature_source"
+                ]
+                all_results[-1]["scene_temperature_calibrated"] = temperature[
+                    "scene_temperature_calibrated"
+                ]
+                all_results[-1]["temperature"] = temperature
                 all_results[-1]["decision"] = decision_result
 
                 frame_to_write = combined  # ← 改成包含儀表板的畫面

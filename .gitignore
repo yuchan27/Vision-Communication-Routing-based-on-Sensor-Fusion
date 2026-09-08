@@ -5,3 +5,16 @@
 \split audio 4-20210504T123341Z-001
 \drive-download-20210504T145639Z-001
 \photo.zip
+
+# Python environments and runtime caches
+.venv/
+AppYOLO/.venv/
+AppYOLO/.venv313/
+__pycache__/
+AppYOLO/**/__pycache__/
+*.py[cod]
+
+# Local runtime uploads and live telemetry
+AppYOLO/outputs/uploads/*
+AppYOLO/outputs/live_logs/*.jsonl
+AppYOLO/outputs/videos/*_out.mp4
