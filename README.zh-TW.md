@@ -15,6 +15,12 @@
 - FastAPI 後端提供的瀏覽器指揮中心介面。
 - 已定義溫度資料契約，方便未來接上可輸出實際溫度的輻射式熱成像感測器。
 
+## 示範影像
+
+版本庫內附 `out.gif`，展示目前 Dashboard 與推論流程：
+
+![Fire Vision Command Center 示範影像](out.gif)
+
 ## 目前狀態與重要限制
 
 目前偵測器使用 RGB 圖片與專案內附的 YOLO 權重。`FireTemperatureEstimator` 是從畫面推導出的視覺估算值，不是經校正的物理溫度。即時 worker 回報的主機／CPU 溫度只作為診斷資訊，絕不會被當成安全判斷使用的場景溫度。

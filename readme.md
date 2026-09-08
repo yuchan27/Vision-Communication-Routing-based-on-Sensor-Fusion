@@ -15,6 +15,12 @@ The repository is currently a local research/prototype system. It is useful for 
 - A browser command center served by the FastAPI backend.
 - An explicit temperature contract ready for radiometric thermal-sensor integration.
 
+## Demo
+
+The repository includes `out.gif`, a short demonstration of the current dashboard and inference workflow:
+
+![Fire Vision Command Center demonstration](out.gif)
+
 ## Current status and important limitations
 
 The current detector operates on RGB images and the bundled YOLO weights. `FireTemperatureEstimator` produces a visual estimate from the image; that value is not a calibrated physical measurement. The host/CPU temperature reported by the live worker is diagnostic metadata only and is never used as the scene temperature for a safety decision.
