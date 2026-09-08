@@ -3,131 +3,224 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#080d12" />
   <title>Fire Vision Command Center</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <link rel="stylesheet" href="/assets/styles.css?v=20260329c" />
+  <link rel="stylesheet" href="/assets/styles.css?v=20260907a" />
 </head>
 <body>
-  <div class="ambient ambient-a"></div>
-  <div class="ambient ambient-b"></div>
-  <div class="ambient ambient-c"></div>
+  <a class="skip-link" href="#main-content">Skip to dashboard content</a>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+  <div class="ambient ambient-c" aria-hidden="true"></div>
 
-  <main class="shell">
+  <main id="main-content" class="shell">
     <header class="hero reveal">
-      <div>
-        <p class="eyebrow">Material 3 Inspired Dynamic UX</p>
-        <h1>Fire Vision Command Center</h1>
-        <p class="subtext">YOLO backend + decision engine + live telemetry API in one adaptive dashboard.</p>
-        <p id="modelMeta" class="model-meta">Loading model metadata...</p>
+      <div class="hero-copy">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" role="img" focusable="false">
+              <path d="M17.4 2.8c.7 5.5-2.8 7.8-5.1 10.3-1.6 1.8-2.3 3.4-2.3 5.5 0 3.8 2.8 6.5 6.4 6.5 4.2 0 7.2-3.2 7.2-7.4 0-3.8-2.3-7.7-6.2-14.9Z" fill="currentColor" />
+              <path d="M14.8 21.2c0-1.9 1.2-3.2 2.8-5.1 1.4 2.3 2 3.8 2 5.1 0 1.9-1 3.3-2.6 3.3-1.4 0-2.2-1.2-2.2-3.3Z" fill="#080d12" />
+            </svg>
+          </div>
+          <div>
+            <p class="eyebrow">Fire Vision / Operations</p>
+            <h1>Fire Vision Command Center</h1>
+          </div>
+        </div>
+        <p class="subtext">Multimodal fire screening for images, video, live streams, and four-camera evacuation logic.</p>
+        <div class="hero-tags" aria-label="System capabilities">
+          <span class="hero-tag">RGB detection</span>
+          <span class="hero-tag">Decision fusion</span>
+          <span class="hero-tag">Thermal-ready contract</span>
+        </div>
       </div>
-      <div class="hero-actions">
+      <div class="hero-status">
+        <div class="system-status-card">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div>
+            <p class="status-label">API status</p>
+            <p id="healthBadge" class="status-value" role="status" aria-live="polite">CHECKING</p>
+          </div>
+        </div>
         <button id="btnHealth" class="btn tonal" type="button">Check API</button>
-        <span id="healthBadge" class="badge neutral">BOOTING</span>
+        <p id="modelMeta" class="model-meta">Loading model metadata...</p>
       </div>
     </header>
 
+    <section class="command-strip reveal delay-1" aria-labelledby="workspace-heading">
+      <div>
+        <p class="section-kicker">Active workspace</p>
+        <h2 id="workspace-heading">Choose a signal source</h2>
+        <p class="section-copy">Run a controlled inference first, then use live monitoring when a camera source is available.</p>
+      </div>
+      <div class="command-strip-meta" aria-label="Temperature provenance">
+        <span class="signal-chip"><span class="chip-marker chip-marker-rgb" aria-hidden="true"></span>RGB scene estimate</span>
+        <span class="signal-chip"><span class="chip-marker chip-marker-thermal" aria-hidden="true"></span>Optional radiometric input</span>
+        <span class="signal-chip"><span class="chip-marker chip-marker-host" aria-hidden="true"></span>Host temperature is diagnostic</span>
+      </div>
+    </section>
+
     <section class="layout">
+      <div class="section-divider reveal delay-1" role="presentation">
+        <span class="section-number">01</span>
+        <div>
+          <p class="section-kicker">Analyze</p>
+          <h2>Run a controlled inference</h2>
+        </div>
+        <p class="section-copy">Use a known image, video, or the original VCN pipeline to inspect outputs and decisions.</p>
+      </div>
       <article class="card top-card reveal delay-1">
         <div class="card-header">
-          <h2>Image Inference</h2>
+          <div>
+            <p class="card-kicker">Single frame</p>
+            <h3>Image inference</h3>
+          </div>
           <span class="pill">POST /api/inference/image</span>
         </div>
         <form id="uploadForm" class="stack">
-          <label class="input-label" for="imageInput">Upload JPG / PNG frame</label>
-          <input id="imageInput" type="file" accept=".jpg,.jpeg,.png" />
-          <button id="uploadBtn" class="btn filled" type="submit">Run Inference</button>
+          <label class="input-label" for="imageInput">Image file</label>
+          <input id="imageInput" type="file" accept=".jpg,.jpeg,.png" aria-describedby="imageHelp" />
+          <p id="imageHelp" class="field-help">JPG, JPEG, or PNG. The annotated result is saved to outputs/images.</p>
+          <label class="input-label" for="imageSensorTempInput">Optional thermal sensor temperature (°C)</label>
+          <input id="imageSensorTempInput" type="number" min="-50" max="200" step="0.1" placeholder="Leave blank for RGB estimate" />
+          <button id="uploadBtn" class="btn filled" type="submit">Run image inference</button>
         </form>
-        <p id="uploadStatus" class="helper">Waiting for image upload.</p>
+        <p id="uploadStatus" class="helper" role="status" aria-live="polite">Waiting for an image.</p>
       </article>
 
       <article class="card top-card reveal delay-2">
         <div class="card-header">
-          <h2>Video Inference</h2>
+          <div>
+            <p class="card-kicker">Frame sequence</p>
+            <h3>Video inference</h3>
+          </div>
           <span class="pill">POST /api/inference/video</span>
         </div>
         <form id="videoForm" class="stack">
-          <label class="input-label" for="videoInput">Upload MP4 / AVI / MOV</label>
-          <input id="videoInput" type="file" accept=".mp4,.avi,.mov,.mkv,.m4v" />
-          <button id="videoBtn" class="btn filled" type="submit">Run Video Inference</button>
+          <label class="input-label" for="videoInput">Video file</label>
+          <input id="videoInput" type="file" accept=".mp4,.avi,.mov,.mkv,.m4v" aria-describedby="videoHelp" />
+          <p id="videoHelp" class="field-help">MP4, AVI, MOV, MKV, or M4V. Processing is synchronous.</p>
+          <label class="input-label" for="videoSensorTempInput">Optional synchronized sensor temperature (°C)</label>
+          <input id="videoSensorTempInput" type="number" min="-50" max="200" step="0.1" placeholder="Leave blank for RGB estimate" />
+          <button id="videoBtn" class="btn filled" type="submit">Run video inference</button>
         </form>
-        <p id="videoStatus" class="helper">Waiting for video upload.</p>
+        <p id="videoStatus" class="helper" role="status" aria-live="polite">Waiting for a video.</p>
       </article>
 
       <article class="card top-card reveal delay-3">
         <div class="card-header">
-          <h2>Original Pipelines</h2>
-          <span class="pill">VCN.py</span>
+          <div>
+            <p class="card-kicker">Four-camera logic</p>
+            <h3>VCN pipeline</h3>
+          </div>
+          <span class="pill">POST /api/pipeline/vcn/run</span>
         </div>
         <div class="stack">
-          <p class="helper">Run original VCN logic as backend API without changing your script behavior.</p>
+          <p class="card-description">Process the bundled basement camera package, compose the map, and calculate safe-route guidance.</p>
           <div class="button-row">
-            <button id="btnRunVCN" class="btn tonal" type="button">Run VCN Logic</button>
+            <button id="btnRunVCN" class="btn tonal" type="button">Run VCN pipeline</button>
           </div>
-          <p id="pipelineStatus" class="helper">Pipeline idle.</p>
-          <p class="helper">VCN output image will be shown in Annotated Preview.</p>
+          <p id="pipelineStatus" class="helper" role="status" aria-live="polite">Pipeline idle.</p>
         </div>
       </article>
 
+      <div class="section-divider reveal delay-2" role="presentation">
+        <span class="section-number">02</span>
+        <div>
+          <p class="section-kicker">Monitor</p>
+          <h2>Watch the latest signal</h2>
+        </div>
+        <p class="section-copy">Live events update the decision panel while the latest annotated frame stays visible beside the evidence.</p>
+      </div>
+
       <article class="card live-card reveal delay-2">
         <div class="card-header">
-          <h2>Live Stream</h2>
-          <span class="pill">SSE + Frame Pull</span>
-        </div>
-        <div class="stack">
-          <label class="input-label" for="sourceInput">Source (0 for webcam or a video path)</label>
-          <input id="sourceInput" type="text" value="0" placeholder="0" />
-
-          <label class="input-label" for="confInput">Confidence threshold</label>
-          <input id="confInput" type="number" min="0.05" max="0.95" step="0.05" value="0.25" />
-
-          <label class="input-label" for="frameSkipInput">Frame skip (1 = process every frame)</label>
-          <input id="frameSkipInput" type="number" min="1" max="8" step="1" value="1" />
-
-          <label class="input-label" for="maxWidthInput">Max frame width (performance cap)</label>
-          <input id="maxWidthInput" type="number" min="640" max="3840" step="64" value="1280" />
-
+          <div>
+            <p class="card-kicker">Camera worker</p>
+            <h3>Live stream</h3>
+          </div>
           <div class="button-row">
-            <button id="btnLiveStart" class="btn filled" type="button">Start Live</button>
-            <button id="btnLiveStop" class="btn outline" type="button">Stop Live</button>
-            <span id="streamBadge" class="badge neutral">IDLE</span>
+            <span class="pill">SSE + frame pull</span>
+            <span id="streamBadge" class="badge neutral" role="status" aria-live="polite">IDLE</span>
           </div>
         </div>
-        <p class="helper">Tip: higher frame skip and lower max width reduce lag but lower detail.</p>
-        <p id="streamStatus" class="helper">Live stream not started.</p>
-        <p id="streamLogPath" class="helper">Live log: not started.</p>
+        <div class="stack">
+          <label class="input-label" for="sourceInput">Source</label>
+          <input id="sourceInput" type="text" value="0" placeholder="0 or a video path" aria-describedby="sourceHelp" />
+          <p id="sourceHelp" class="field-help">Use <code>0</code> for the default webcam or a workspace-relative video path.</p>
+
+          <details class="advanced-settings">
+            <summary>Performance controls</summary>
+            <div class="settings-grid">
+              <div>
+                <label class="input-label" for="confInput">Confidence threshold</label>
+                <input id="confInput" type="number" min="0.05" max="0.95" step="0.05" value="0.25" />
+              </div>
+              <div>
+                <label class="input-label" for="frameSkipInput">Frame skip</label>
+                <input id="frameSkipInput" type="number" min="1" max="8" step="1" value="1" />
+              </div>
+              <div>
+                <label class="input-label" for="maxWidthInput">Max frame width</label>
+                <input id="maxWidthInput" type="number" min="640" max="3840" step="64" value="1280" />
+              </div>
+            </div>
+            <p class="field-help">Higher frame skip and lower width reduce load at the cost of detail.</p>
+          </details>
+
+          <div class="button-row live-actions">
+            <button id="btnLiveStart" class="btn filled" type="button">Start live monitor</button>
+            <button id="btnLiveStop" class="btn outline" type="button">Stop</button>
+          </div>
+        </div>
+        <p id="streamStatus" class="helper" role="status" aria-live="polite">Live monitor is idle.</p>
+        <p id="streamLogPath" class="helper compact-helper">Live log: not started.</p>
       </article>
 
       <article class="card media-card reveal delay-3">
         <div class="card-header">
-          <h2>Annotated Preview</h2>
+          <div>
+            <p class="card-kicker">Evidence surface</p>
+            <h3>Annotated preview</h3>
+          </div>
           <div class="button-row">
             <span class="pill">GET /api/live/frame</span>
-            <button id="btnPreviewZoom" class="btn outline" type="button">Zoom</button>
+            <button id="btnPreviewZoom" class="btn outline" type="button">Open large</button>
           </div>
         </div>
         <div id="mediaLiveLayout" class="media-live-layout snapshot-hidden">
           <div class="media-wrap">
-            <img id="liveFrame" alt="Annotated frame preview" />
-            <div id="frameFallback" class="media-fallback">No frame yet</div>
+            <img id="liveFrame" alt="Latest annotated fire-detection frame" />
+            <div id="frameFallback" class="media-fallback">
+              <span class="fallback-icon" aria-hidden="true">+</span>
+              <strong>No annotated frame yet</strong>
+              <span>Run an image/video inference or start live monitoring.</span>
+            </div>
           </div>
 
-          <aside id="liveSidePanel" class="live-side-panel hidden">
-            <p class="live-side-title">Live Snapshot</p>
+          <aside id="liveSidePanel" class="live-side-panel hidden" aria-label="Live snapshot details">
+            <div class="side-panel-heading">
+              <p class="card-kicker">Latest sample</p>
+              <p class="live-side-title">Live snapshot</p>
+            </div>
 
             <div class="side-stat-grid">
               <div class="side-stat-card">
-                <p class="side-stat-label">Temperature</p>
+                <p class="side-stat-label">Scene temperature</p>
                 <p id="sideTempValue" class="side-stat-value">0 °C</p>
+                <p id="sideTempSourceValue" class="side-stat-source">No source</p>
               </div>
               <div class="side-stat-card">
-                <p class="side-stat-label">Risk Score</p>
+                <p class="side-stat-label">Risk score</p>
                 <p id="sideRiskValue" class="side-stat-value">0.00</p>
               </div>
               <div class="side-stat-card">
-                <p class="side-stat-label">Top Confidence</p>
+                <p class="side-stat-label">Top confidence</p>
                 <p id="sideTopConfValue" class="side-stat-value">0%</p>
               </div>
               <div class="side-stat-card">
@@ -136,11 +229,11 @@
               </div>
             </div>
 
-            <p class="side-inline-meta">Top Class: <span id="sideTopClassValue">No detection</span></p>
-            <p class="side-inline-meta">Action: <span id="sideActionValue">CONTINUE_MONITORING</span></p>
+            <p class="side-inline-meta">Top class: <strong id="sideTopClassValue">No detection</strong></p>
+            <p class="side-inline-meta">Action: <strong id="sideActionValue">CONTINUE_MONITORING</strong></p>
 
             <div class="side-detection-box">
-              <p class="side-stat-label">Top Detections</p>
+              <p class="side-stat-label">Top detections</p>
               <ul id="sideDetectionList" class="side-detection-list">
                 <li class="side-empty">No detections yet</li>
               </ul>
@@ -149,25 +242,37 @@
         </div>
       </article>
 
+      <div class="section-divider reveal delay-3" role="presentation">
+        <span class="section-number">03</span>
+        <div>
+          <p class="section-kicker">Decide</p>
+          <h2>Read the evidence trail</h2>
+        </div>
+        <p class="section-copy">Risk, temperature provenance, speed, detections, and bounding boxes stay in one auditable view.</p>
+      </div>
+
       <article class="card metrics-card reveal delay-4">
         <div class="card-header">
-          <h2>Telemetry and Decisions</h2>
-          <span class="pill">Real-time Metrics</span>
+          <div>
+            <p class="card-kicker">Decision fusion</p>
+            <h3>Telemetry and decisions</h3>
+          </div>
+          <span class="pill">Live metrics</span>
         </div>
 
         <div class="kpi-grid">
           <div class="kpi">
-            <p class="kpi-title">Risk Score</p>
+            <p class="kpi-title">Risk score</p>
             <p id="riskValue" class="kpi-value">0.00</p>
             <p id="riskState" class="kpi-foot">MONITOR</p>
           </div>
           <div class="kpi">
-            <p class="kpi-title">Vision Temp (C)</p>
+            <p class="kpi-title">Scene temperature</p>
             <p id="tempValue" class="kpi-value">0</p>
-            <p class="kpi-foot">Estimated from flame pixels</p>
+            <p id="tempSourceValue" class="kpi-foot">Waiting for a source</p>
           </div>
           <div class="kpi">
-            <p class="kpi-title">FPS</p>
+            <p class="kpi-title">Live FPS</p>
             <p id="fpsValue" class="kpi-value">0</p>
             <p class="kpi-foot">Live inference speed</p>
           </div>
@@ -177,31 +282,42 @@
             <p id="decisionAction" class="kpi-foot">CONTINUE_MONITORING</p>
           </div>
           <div class="kpi">
-            <p class="kpi-title">Top Confidence</p>
+            <p class="kpi-title">Top confidence</p>
             <p id="topConfValue" class="kpi-value">0%</p>
             <p id="topClassValue" class="kpi-foot">No detection</p>
           </div>
         </div>
 
         <div class="chart-wrap">
-          <div class="chart-meta">X軸: 時間 ｜ 左Y軸: Risk Score (0~1) ｜ 右Y軸: 溫度 (°C)</div>
-          <canvas id="riskChart"></canvas>
+          <div class="chart-heading">
+            <div>
+              <p class="chart-title">Risk and scene temperature</p>
+              <p class="chart-meta">Time series for the latest 120 points. Values remain visible in the table below.</p>
+            </div>
+            <span class="chart-legend-note">Risk 0–1 / Temperature °C</span>
+          </div>
+          <canvas id="riskChart" aria-label="Risk score and scene temperature over time"></canvas>
         </div>
 
         <div class="table-wrap">
-          <div class="chart-meta">直播即時表格：當前溫度 / 偵測類別 / 信心度 / 位置</div>
+          <div class="chart-heading">
+            <div>
+              <p class="chart-title">Latest signal records</p>
+              <p class="chart-meta">Temperature provenance, detection confidence, and normalized bounding boxes.</p>
+            </div>
+          </div>
           <div class="detection-scroll">
             <table class="telemetry-table">
               <thead>
                 <tr>
-                  <th>Type</th>
-                  <th>Value</th>
-                  <th>BBox / Live Info</th>
+                  <th scope="col">Signal</th>
+                  <th scope="col">Reading</th>
+                  <th scope="col">Context / bounding box</th>
                 </tr>
               </thead>
               <tbody id="detectionBody">
                 <tr>
-                  <td colspan="3" class="empty-cell">No detections yet</td>
+                  <td colspan="3" class="empty-cell">No detections yet.</td>
                 </tr>
               </tbody>
             </table>
@@ -209,30 +325,42 @@
         </div>
       </article>
 
+      <div class="section-divider reveal delay-4" role="presentation">
+        <span class="section-number">04</span>
+        <div>
+          <p class="section-kicker">Review</p>
+          <h2>Keep the generated evidence close</h2>
+        </div>
+        <p class="section-copy">Preview annotated images and processed videos without leaving the command center.</p>
+      </div>
+
       <article class="card artifacts-card reveal delay-4">
         <div class="card-header">
-          <h2>Generated Artifacts</h2>
+          <div>
+            <p class="card-kicker">Workspace outputs</p>
+            <h3>Generated artifacts</h3>
+          </div>
           <div class="button-row">
             <label class="input-label" for="artifactLimit">Show</label>
-            <select id="artifactLimit" class="artifact-select">
+            <select id="artifactLimit" class="artifact-select" aria-label="Number of artifacts to show">
               <option value="24">24</option>
               <option value="48" selected>48</option>
               <option value="80">80</option>
             </select>
             <button id="btnRefreshArtifacts" class="btn outline" type="button">Refresh</button>
-            <button id="btnCleanupArtifacts" class="btn outline" type="button">Clean Old</button>
+            <button id="btnCleanupArtifacts" class="btn danger-outline" type="button">Clean old</button>
             <span class="pill">GET /api/generated/files</span>
           </div>
         </div>
-        <p id="artifactSummary" class="helper">No generated files loaded yet.</p>
+        <p id="artifactSummary" class="helper" role="status" aria-live="polite">No generated files loaded yet.</p>
         <div id="artifactList" class="artifact-list">
-          <p class="helper">No generated files loaded yet.</p>
+          <p class="helper">Run an inference to create a previewable artifact.</p>
         </div>
       </article>
     </section>
   </main>
 
-  <div id="mediaModal" class="media-modal hidden" aria-hidden="true">
+  <div id="mediaModal" class="media-modal hidden" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="mediaModalTitle">
     <div class="media-modal-card">
       <div class="media-modal-header">
         <p id="mediaModalTitle" class="media-modal-title">Preview</p>
@@ -242,11 +370,11 @@
         </div>
       </div>
       <div class="media-modal-body">
-        <img id="mediaModalImage" alt="Expanded media preview" />
+        <img id="mediaModalImage" alt="Expanded annotated media preview" />
       </div>
     </div>
   </div>
 
-  <script src="/assets/app.js?v=20260329g" defer></script>
+  <script src="/assets/app.js?v=20260907a" defer></script>
 </body>
 </html>

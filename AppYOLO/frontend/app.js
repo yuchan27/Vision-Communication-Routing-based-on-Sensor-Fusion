@@ -4,10 +4,12 @@ const dom = {
   modelMeta: document.getElementById("modelMeta"),
   uploadForm: document.getElementById("uploadForm"),
   imageInput: document.getElementById("imageInput"),
+  imageSensorTempInput: document.getElementById("imageSensorTempInput"),
   uploadBtn: document.getElementById("uploadBtn"),
   uploadStatus: document.getElementById("uploadStatus"),
   videoForm: document.getElementById("videoForm"),
   videoInput: document.getElementById("videoInput"),
+  videoSensorTempInput: document.getElementById("videoSensorTempInput"),
   videoBtn: document.getElementById("videoBtn"),
   videoStatus: document.getElementById("videoStatus"),
   btnRunVCN: document.getElementById("btnRunVCN"),
@@ -29,6 +31,7 @@ const dom = {
   riskValue: document.getElementById("riskValue"),
   riskState: document.getElementById("riskState"),
   tempValue: document.getElementById("tempValue"),
+  tempSourceValue: document.getElementById("tempSourceValue"),
   fpsValue: document.getElementById("fpsValue"),
   detCountValue: document.getElementById("detCountValue"),
   decisionAction: document.getElementById("decisionAction"),
@@ -36,6 +39,7 @@ const dom = {
   topClassValue: document.getElementById("topClassValue"),
   detectionBody: document.getElementById("detectionBody"),
   sideTempValue: document.getElementById("sideTempValue"),
+  sideTempSourceValue: document.getElementById("sideTempSourceValue"),
   sideRiskValue: document.getElementById("sideRiskValue"),
   sideTopConfValue: document.getElementById("sideTopConfValue"),
   sideDetCountValue: document.getElementById("sideDetCountValue"),
@@ -61,6 +65,7 @@ let riskChart = null;
 let chartLabels = [];
 let chartRisk = [];
 let chartTemp = [];
+let previousFocusedElement = null;
 const MAX_CHART_POINTS = 120;
 
 function setBadge(node, text, type) {
@@ -126,12 +131,119 @@ function formatTimeLabel(isoTimestamp) {
   if (Number.isNaN(date.getTime())) {
     return String(isoTimestamp);
   }
-  return date.toLocaleTimeString("zh-TW", { hour12: false });
+  return date.toLocaleTimeString("en-US", { hour12: false });
+}
+
+function drawFallbackChart(chart) {
+  const canvas = chart.canvas;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(Math.floor(rect.width), 320);
+  const height = Math.max(Math.floor(rect.height), 220);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  const colors = {
+    grid: "rgba(154, 171, 180, 0.16)",
+    text: "#9aabb4",
+    risk: "#ff745f",
+    temperature: "#63e2d1",
+  };
+  const padding = { top: 16, right: 48, bottom: 28, left: 42 };
+  const plotWidth = Math.max(width - padding.left - padding.right, 1);
+  const plotHeight = Math.max(height - padding.top - padding.bottom, 1);
+  const labels = chart.data.labels || [];
+  const riskData = chart.data.datasets[0].data || [];
+  const temperatureData = chart.data.datasets[1].data || [];
+  const tempMin = Number(chart.options.scales.yTemp.min || 0);
+  const tempMax = Math.max(Number(chart.options.scales.yTemp.max || 80), tempMin + 1);
+
+  context.font = '11px "IBM Plex Mono", Consolas, monospace';
+  context.lineWidth = 1;
+  context.strokeStyle = colors.grid;
+  context.fillStyle = colors.text;
+  context.textBaseline = "middle";
+
+  for (let step = 0; step <= 4; step += 1) {
+    const ratio = step / 4;
+    const y = padding.top + plotHeight * ratio;
+    context.beginPath();
+    context.moveTo(padding.left, y);
+    context.lineTo(width - padding.right, y);
+    context.stroke();
+    context.fillText((1 - ratio).toFixed(1), 8, y);
+    const temperatureLabel = tempMax - ((tempMax - tempMin) * ratio);
+    context.fillText(`${temperatureLabel.toFixed(0)}°`, width - padding.right + 8, y);
+  }
+
+  const drawLine = (values, color, mapValue) => {
+    const finiteValues = values.map((value) => Number(value));
+    if (finiteValues.length === 0) {
+      return;
+    }
+    context.beginPath();
+    finiteValues.forEach((value, index) => {
+      const x = padding.left + (labels.length <= 1 ? plotWidth / 2 : (index / (labels.length - 1)) * plotWidth);
+      const y = padding.top + mapValue(value) * plotHeight;
+      if (index === 0) {
+        context.moveTo(x, y);
+      } else {
+        context.lineTo(x, y);
+      }
+    });
+    context.strokeStyle = color;
+    context.lineWidth = 2;
+    context.stroke();
+  };
+
+  drawLine(riskData, colors.risk, (value) => 1 - Math.max(0, Math.min(1, value)));
+  drawLine(temperatureData, colors.temperature, (value) => 1 - Math.max(0, Math.min(1, (value - tempMin) / (tempMax - tempMin))));
+
+  if (labels.length === 0) {
+    context.fillStyle = colors.text;
+    context.fillText("Waiting for telemetry...", padding.left, padding.top + plotHeight / 2);
+  } else {
+    context.fillStyle = colors.text;
+    context.textBaseline = "alphabetic";
+    context.fillText(labels[0], padding.left, height - 8);
+    if (labels.length > 1) {
+      const lastLabel = labels[labels.length - 1];
+      const labelWidth = context.measureText(lastLabel).width;
+      context.fillText(lastLabel, width - padding.right - labelWidth, height - 8);
+    }
+  }
+}
+
+function createFallbackChart(canvas, maxPoints) {
+  const chart = {
+    canvas,
+    __maxPoints: maxPoints,
+    data: {
+      labels: [],
+      datasets: [{ data: [] }, { data: [] }],
+    },
+    options: { scales: { yTemp: { min: 0, max: 80 } } },
+    update() {
+      drawFallbackChart(this);
+    },
+  };
+  chart.update();
+  return chart;
 }
 
 function createDualAxisChart(canvas, maxPoints = MAX_CHART_POINTS) {
   if (!canvas) {
     return null;
+  }
+  if (typeof Chart === "undefined") {
+    return createFallbackChart(canvas, maxPoints);
   }
 
   const chart = new Chart(canvas, {
@@ -140,7 +252,7 @@ function createDualAxisChart(canvas, maxPoints = MAX_CHART_POINTS) {
       labels: [],
       datasets: [
         {
-          label: "Risk Score",
+          label: "Risk score",
           data: [],
           borderColor: "#d44e1a",
           backgroundColor: "rgba(212, 78, 26, 0.2)",
@@ -150,7 +262,7 @@ function createDualAxisChart(canvas, maxPoints = MAX_CHART_POINTS) {
           pointRadius: 0,
         },
         {
-          label: "Vision Temp C",
+          label: "Scene temperature °C",
           data: [],
           borderColor: "#006f6b",
           backgroundColor: "rgba(0, 111, 107, 0.15)",
@@ -313,16 +425,19 @@ function buildCurrentTelemetryRow(metrics) {
   const fps = Number(metrics?.fps ?? 0);
   const timestamp = formatTimeLabel(metrics?.timestamp || "");
 
-  const adjustedTemp = Number(metrics?.vision_temperature_celsius ?? 0);
+  const adjustedTemp = getSceneTemperature(metrics);
   const rawSystemTemp = metrics?.system_temperature_celsius;
-  const tempSource = String(metrics?.system_temperature_source || "unavailable");
+  const tempSource = getTemperatureSource(metrics);
 
-  const tempText = rawSystemTemp === null || rawSystemTemp === undefined
-    ? `${formatNumber(adjustedTemp, 2)} °C (${tempSource})`
-    : `${formatNumber(rawSystemTemp, 2)} -> ${formatNumber(adjustedTemp, 2)} °C (${tempSource})`;
+  const sceneText = adjustedTemp === null || !Number.isFinite(adjustedTemp)
+    ? `-- °C (${tempSource})`
+    : `${formatNumber(adjustedTemp, 2)} °C (${tempSource})`;
+  const hostText = rawSystemTemp === null || rawSystemTemp === undefined
+    ? "host temp unavailable"
+    : `host diagnostic ${formatNumber(rawSystemTemp, 2)} °C`;
 
-  const detail = `frame=${frameId}, risk=${formatNumber(risk, 2)}, fps=${formatNumber(fps, 1)}, time=${timestamp}`;
-  return `<tr><td>CURRENT</td><td>${escapeHtml(tempText)}</td><td>${escapeHtml(detail)}</td></tr>`;
+  const detail = `frame=${frameId}, risk=${formatNumber(risk, 2)}, fps=${formatNumber(fps, 1)}, ${hostText}, time=${timestamp}`;
+  return `<tr><td>SCENE</td><td>${escapeHtml(sceneText)}</td><td>${escapeHtml(detail)}</td></tr>`;
 }
 
 function renderDetectionDetails(detections, metrics = null) {
@@ -419,19 +534,27 @@ function paintMetrics(metrics) {
 
   renderDetectionDetails(detectionRows, metrics);
 
-  const temp = metrics.vision_temperature_celsius;
+  const temp = getSceneTemperature(metrics);
+  const temperatureSource = getTemperatureSource(metrics);
   if (dom.tempValue) {
-    dom.tempValue.textContent = temp === null || temp === undefined ? "0" : formatNumber(temp, 2);
+    dom.tempValue.textContent = temp === null || !Number.isFinite(temp) ? "--" : formatNumber(temp, 2);
   }
   if (dom.sideTempValue) {
-    const sideTemp = temp === null || temp === undefined ? 0 : Number(temp);
-    dom.sideTempValue.textContent = `${formatNumber(sideTemp, 2)} °C`;
+    dom.sideTempValue.textContent = temp === null || !Number.isFinite(temp)
+      ? "-- °C"
+      : `${formatNumber(temp, 2)} °C`;
+  }
+  if (dom.tempSourceValue) {
+    dom.tempSourceValue.textContent = temperatureSource;
+  }
+  if (dom.sideTempSourceValue) {
+    dom.sideTempSourceValue.textContent = temperatureSource;
   }
 
   paintDecision(metrics.decision || {});
 
   const risk = Number(metrics.decision?.risk_score || 0);
-  const chartTempValue = temp === null || temp === undefined ? 0 : Number(temp);
+  const chartTempValue = temp === null || !Number.isFinite(temp) ? 0 : Number(temp);
   const label = formatTimeLabel(metrics.timestamp);
   pushChartPoint(label, risk, chartTempValue);
 }
@@ -467,7 +590,9 @@ function paintVideoTelemetry(video) {
     for (const [index, point] of points.entries()) {
       const frameLabel = toPointTimeLabel(point, index);
       const risk = Number(point.risk_score || 0);
-      const temp = Number(point.vision_temperature_celsius || 0);
+      const temp = Number(
+        point.scene_temperature_celsius ?? point.vision_temperature_celsius ?? 0,
+      );
       pushChartPoint(frameLabel, risk, temp);
     }
 
@@ -482,7 +607,18 @@ function paintVideoTelemetry(video) {
       dom.detCountValue.textContent = String(last.detection_count || 0);
     }
     if (dom.tempValue) {
-      dom.tempValue.textContent = formatNumber(last.vision_temperature_celsius || 0, 2);
+      const lastTemp = last.scene_temperature_celsius ?? last.vision_temperature_celsius;
+      dom.tempValue.textContent = formatNumber(lastTemp, 2);
+    }
+    if (dom.tempSourceValue) {
+      dom.tempSourceValue.textContent = getTemperatureSource(last);
+    }
+    if (dom.sideTempValue) {
+      const lastTemp = last.scene_temperature_celsius ?? last.vision_temperature_celsius;
+      dom.sideTempValue.textContent = `${formatNumber(lastTemp, 2)} °C`;
+    }
+    if (dom.sideTempSourceValue) {
+      dom.sideTempSourceValue.textContent = getTemperatureSource(last);
     }
   }
 
@@ -496,6 +632,8 @@ function paintVideoTelemetry(video) {
     frame_id: lastPoint?.frame_id,
     timestamp: lastPoint?.timestamp,
     vision_temperature_celsius: lastPoint?.vision_temperature_celsius,
+    scene_temperature_celsius: lastPoint?.scene_temperature_celsius,
+    scene_temperature_source: lastPoint?.scene_temperature_source || lastPoint?.temperature_source,
     system_temperature_celsius: lastPoint?.system_temperature_celsius,
     system_temperature_source: lastPoint?.system_temperature_source || "video-telemetry",
     fps: 0,
@@ -537,6 +675,7 @@ function openMediaModal({ src, title, downloadHref = "", isMjpeg = false }) {
     return;
   }
 
+  previousFocusedElement = document.activeElement;
   dom.mediaModal.classList.remove("hidden");
   dom.mediaModal.setAttribute("aria-hidden", "false");
 
@@ -556,6 +695,71 @@ function openMediaModal({ src, title, downloadHref = "", isMjpeg = false }) {
 
   const sourceWithBust = isMjpeg ? `${src}${src.includes("?") ? "&" : "?"}t=${Date.now()}` : src;
   dom.mediaModalImage.src = sourceWithBust;
+  dom.btnMediaClose?.focus();
+}
+
+function setStatus(node, text, tone = "neutral") {
+  if (!node) {
+    return;
+  }
+  node.textContent = text;
+  node.classList.remove("status-neutral", "status-good", "status-alert");
+  node.classList.add(`status-${tone}`);
+}
+
+function setBusy(button, busy, busyLabel = "Working...") {
+  if (!button) {
+    return;
+  }
+  if (busy) {
+    if (!button.dataset.idleLabel) {
+      button.dataset.idleLabel = button.textContent;
+    }
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = busyLabel;
+    return;
+  }
+  button.disabled = false;
+  button.removeAttribute("aria-busy");
+  if (button.dataset.idleLabel) {
+    button.textContent = button.dataset.idleLabel;
+  }
+}
+
+async function getResponseError(response) {
+  try {
+    const payload = await response.json();
+    const detail = payload.detail || payload.error_message;
+    if (Array.isArray(detail)) {
+      return detail.map((item) => item?.msg || JSON.stringify(item)).join("; ");
+    }
+    return String(detail || `HTTP ${response.status}`);
+  } catch (error) {
+    return `HTTP ${response.status}`;
+  }
+}
+
+function readOptionalNumber(node) {
+  if (!node || !node.value.trim()) {
+    return null;
+  }
+  const value = Number(node.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getSceneTemperature(metrics) {
+  const value = metrics?.scene_temperature_celsius ?? metrics?.vision_temperature_celsius;
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function getTemperatureSource(metrics) {
+  return String(
+    metrics?.scene_temperature_source
+      || metrics?.temperature_source
+      || metrics?.temperature?.scene_temperature_source
+      || "unavailable",
+  ).replaceAll("_", " ");
 }
 
 function closeMediaModal() {
@@ -566,6 +770,10 @@ function closeMediaModal() {
   dom.mediaModal.classList.add("hidden");
   dom.mediaModal.setAttribute("aria-hidden", "true");
   dom.mediaModalImage.src = "";
+  if (previousFocusedElement && typeof previousFocusedElement.focus === "function") {
+    previousFocusedElement.focus();
+  }
+  previousFocusedElement = null;
 }
 
 function renderArtifacts(files) {
@@ -590,7 +798,7 @@ function renderArtifacts(files) {
 
     let preview = "<div class='artifact-fallback'>No preview</div>";
     if (file.kind === "image") {
-      preview = `<img src='${file.url}' alt='${file.name}' loading='lazy' />`;
+      preview = `<img src='${safeUrl}' alt='${safeName}' loading='lazy' />`;
     } else if (file.kind === "video") {
       preview = `<img src='/api/video/thumbnail?path=${encodedPath}' alt='${safeName}' loading='lazy' />`;
     }
@@ -630,7 +838,7 @@ async function refreshArtifacts() {
   try {
     const response = await fetch(`/api/generated/files?limit=${limit}`);
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      throw new Error(await getResponseError(response));
     }
     const payload = await response.json();
     renderArtifacts(payload.files || []);
@@ -645,6 +853,10 @@ async function refreshArtifacts() {
 }
 
 async function cleanupArtifacts() {
+  if (!window.confirm("Remove generated files older than the selected keep count?")) {
+    return;
+  }
+
   if (dom.artifactSummary) {
     dom.artifactSummary.textContent = "Cleaning old generated files...";
   }
@@ -655,8 +867,7 @@ async function cleanupArtifacts() {
       method: "POST",
     });
     if (!response.ok) {
-      const detail = await response.json();
-      throw new Error(detail.detail || `HTTP ${response.status}`);
+      throw new Error(await getResponseError(response));
     }
 
     const payload = await response.json();
@@ -755,13 +966,16 @@ function connectEvents() {
     }
 
     if (state.last_error) {
-      dom.streamStatus.textContent = state.last_error;
+      setStatus(dom.streamStatus, state.last_error, "alert");
       setBadge(dom.streamBadge, "WARN", "alert");
     }
 
     if (state.running) {
       setBadge(dom.streamBadge, "LIVE", "good");
-      dom.streamStatus.textContent = "Receiving live telemetry.";
+      setStatus(dom.streamStatus, "Receiving live telemetry.", "good");
+    } else if (!state.last_error && state.latest_metrics && Object.keys(state.latest_metrics).length > 0) {
+      setBadge(dom.streamBadge, "IDLE", "neutral");
+      setStatus(dom.streamStatus, "Live source stopped after the latest frame.", "neutral");
     }
 
     setLiveSnapshotVisible(Boolean(state.running));
@@ -773,7 +987,7 @@ function connectEvents() {
 
   liveEventSource.onerror = () => {
     setBadge(dom.streamBadge, "RETRY", "alert");
-    dom.streamStatus.textContent = "SSE disconnected, reconnecting...";
+    setStatus(dom.streamStatus, "Live events disconnected; the browser will retry.", "alert");
   };
 }
 
@@ -785,6 +999,8 @@ async function startLive() {
   const conf = Number(dom.confInput.value || 0.25);
   const frameSkip = Math.max(1, Math.min(8, Number(dom.frameSkipInput.value || 1)));
   const maxFrameWidth = Math.max(640, Math.min(3840, Number(dom.maxWidthInput.value || 1280)));
+  setBusy(dom.btnLiveStart, true, "Starting...");
+  setStatus(dom.streamStatus, "Opening the live source...", "neutral");
 
   try {
     const response = await fetch("/api/live/start", {
@@ -799,12 +1015,11 @@ async function startLive() {
     });
 
     if (!response.ok) {
-      const detail = await response.json();
-      throw new Error(detail.detail || `HTTP ${response.status}`);
+      throw new Error(await getResponseError(response));
     }
 
-    setBadge(dom.streamBadge, "LIVE", "good");
-    dom.streamStatus.textContent = `Live stream started: source=${source}, skip=${frameSkip}, maxWidth=${maxFrameWidth}`;
+    setBadge(dom.streamBadge, "STARTING", "neutral");
+    setStatus(dom.streamStatus, `Live source opened: ${source}. Waiting for the first frame...`, "neutral");
 
     setLiveSnapshotVisible(true);
     resetChart();
@@ -812,22 +1027,31 @@ async function startLive() {
     startFrameLoop();
   } catch (error) {
     setBadge(dom.streamBadge, "ERROR", "alert");
-    dom.streamStatus.textContent = `Start failed: ${error.message}`;
+    setStatus(dom.streamStatus, `Start failed: ${error.message}`, "alert");
+  } finally {
+    setBusy(dom.btnLiveStart, false);
   }
 }
 
 async function stopLive() {
+  setBusy(dom.btnLiveStop, true, "Stopping...");
   try {
-    await fetch("/api/live/stop", { method: "POST" });
+    const response = await fetch("/api/live/stop", { method: "POST" });
+    if (!response.ok) {
+      throw new Error(await getResponseError(response));
+    }
   } catch (error) {
-    // Keep UI fallback even if API fails.
+    setStatus(dom.streamStatus, `Stop failed: ${error.message}`, "alert");
   }
 
   disconnectEvents();
   stopFrameLoop();
   setLiveSnapshotVisible(false);
   setBadge(dom.streamBadge, "IDLE", "neutral");
-  dom.streamStatus.textContent = "Live stream stopped.";
+  if (!dom.streamStatus?.classList.contains("status-alert")) {
+    setStatus(dom.streamStatus, "Live stream stopped.", "neutral");
+  }
+  setBusy(dom.btnLiveStop, false);
 }
 
 async function runImageInference(event) {
@@ -841,16 +1065,29 @@ async function runImageInference(event) {
 
   const file = dom.imageInput.files[0];
   if (!file) {
-    dom.uploadStatus.textContent = "Please choose an image file first.";
+    setStatus(dom.uploadStatus, "Choose an image file first.", "alert");
     return;
   }
 
-  dom.uploadBtn.disabled = true;
-  dom.uploadStatus.textContent = "Running inference...";
+  const sensorValue = readOptionalNumber(dom.imageSensorTempInput);
+  if (dom.imageSensorTempInput?.value.trim() && sensorValue === null) {
+    setStatus(dom.uploadStatus, "Thermal sensor temperature must be a number.", "alert");
+    return;
+  }
+  if (sensorValue !== null && (sensorValue < -50 || sensorValue > 200)) {
+    setStatus(dom.uploadStatus, "Thermal sensor temperature must be between -50 and 200 °C.", "alert");
+    return;
+  }
+
+  setBusy(dom.uploadBtn, true, "Processing...");
+  setStatus(dom.uploadStatus, "Running image inference...", "neutral");
 
   const formData = new FormData();
   formData.append("file", file);
   formData.append("save_annotated", "true");
+  if (sensorValue !== null) {
+    formData.append("sensor_temperature_celsius", String(sensorValue));
+  }
 
   try {
     const response = await fetch("/api/inference/image", {
@@ -859,8 +1096,7 @@ async function runImageInference(event) {
     });
 
     if (!response.ok) {
-      const detail = await response.json();
-      throw new Error(detail.detail || `HTTP ${response.status}`);
+      throw new Error(await getResponseError(response));
     }
 
     const payload = await response.json();
@@ -870,6 +1106,9 @@ async function runImageInference(event) {
       fps: 0,
       detection_count: inference.detection_count,
       vision_temperature_celsius: inference.vision_temperature_celsius,
+      scene_temperature_celsius: inference.scene_temperature_celsius,
+      scene_temperature_source: inference.scene_temperature_source,
+      temperature: inference.temperature,
       decision: inference.decision,
       detections: inference.detections,
       frame_id: inference.frame_id,
@@ -880,12 +1119,12 @@ async function runImageInference(event) {
     }
 
     const action = inference.decision?.suggested_action || "CONTINUE_MONITORING";
-    dom.uploadStatus.textContent = `Inference done. Action: ${action}`;
+    setStatus(dom.uploadStatus, `Image inference complete. Action: ${action}.`, "good");
     await refreshArtifacts();
   } catch (error) {
-    dom.uploadStatus.textContent = `Inference failed: ${error.message}`;
+    setStatus(dom.uploadStatus, `Image inference failed: ${error.message}`, "alert");
   } finally {
-    dom.uploadBtn.disabled = false;
+    setBusy(dom.uploadBtn, false);
   }
 }
 
@@ -900,16 +1139,29 @@ async function runVideoInference(event) {
 
   const file = dom.videoInput.files[0];
   if (!file) {
-    dom.videoStatus.textContent = "Please choose a video file first.";
+    setStatus(dom.videoStatus, "Choose a video file first.", "alert");
     return;
   }
 
-  dom.videoBtn.disabled = true;
-  dom.videoStatus.textContent = "Running video inference... this may take a while.";
+  const sensorValue = readOptionalNumber(dom.videoSensorTempInput);
+  if (dom.videoSensorTempInput?.value.trim() && sensorValue === null) {
+    setStatus(dom.videoStatus, "Thermal sensor temperature must be a number.", "alert");
+    return;
+  }
+  if (sensorValue !== null && (sensorValue < -50 || sensorValue > 200)) {
+    setStatus(dom.videoStatus, "Thermal sensor temperature must be between -50 and 200 °C.", "alert");
+    return;
+  }
+
+  setBusy(dom.videoBtn, true, "Processing...");
+  setStatus(dom.videoStatus, "Running video inference. This may take a while...", "neutral");
 
   const formData = new FormData();
   formData.append("file", file);
   formData.append("with_decision", "true");
+  if (sensorValue !== null) {
+    formData.append("sensor_temperature_celsius", String(sensorValue));
+  }
 
   try {
     const response = await fetch("/api/inference/video", {
@@ -918,8 +1170,7 @@ async function runVideoInference(event) {
     });
 
     if (!response.ok) {
-      const detail = await response.json();
-      throw new Error(detail.detail || `HTTP ${response.status}`);
+      throw new Error(await getResponseError(response));
     }
 
     const payload = await response.json();
@@ -927,12 +1178,12 @@ async function runVideoInference(event) {
     paintVideoTelemetry(video);
 
     const playerUrl = video.player_url || "";
-    dom.videoStatus.textContent = `Video done. Frames: ${video.frame_count || 0}, Alarm frames: ${video.alarm_frame_count || 0}${playerUrl ? ` | Player: ${playerUrl}` : ""}`;
+    setStatus(dom.videoStatus, `Video inference complete. Frames: ${video.frame_count || 0}; alarm frames: ${video.alarm_frame_count || 0}${playerUrl ? `; player: ${playerUrl}` : ""}`, "good");
     await refreshArtifacts();
   } catch (error) {
-    dom.videoStatus.textContent = `Video inference failed: ${error.message}`;
+    setStatus(dom.videoStatus, `Video inference failed: ${error.message}`, "alert");
   } finally {
-    dom.videoBtn.disabled = false;
+    setBusy(dom.videoBtn, false);
   }
 }
 
@@ -943,8 +1194,8 @@ async function runVCNPipeline() {
 
   setLiveSnapshotVisible(false);
 
-  dom.pipelineStatus.textContent = "Running VCN.py logic...";
-  dom.btnRunVCN.disabled = true;
+  setBusy(dom.btnRunVCN, true, "Running...");
+  setStatus(dom.pipelineStatus, "Running the four-camera VCN pipeline...", "neutral");
 
   try {
     const response = await fetch("/api/pipeline/vcn/run", {
@@ -954,8 +1205,7 @@ async function runVCNPipeline() {
     });
 
     if (!response.ok) {
-      const detail = await response.json();
-      throw new Error(detail.detail || `HTTP ${response.status}`);
+      throw new Error(await getResponseError(response));
     }
 
     const payload = await response.json();
@@ -964,12 +1214,12 @@ async function runVCNPipeline() {
     if (outputUrl) {
       setFrameSource(`${outputUrl}?t=${Date.now()}`);
     }
-    dom.pipelineStatus.textContent = `VCN logic done. Processed cameras: ${count}`;
+    setStatus(dom.pipelineStatus, `VCN pipeline complete. Processed cameras: ${count}.`, "good");
     await refreshArtifacts();
   } catch (error) {
-    dom.pipelineStatus.textContent = `VCN pipeline failed: ${error.message}`;
+    setStatus(dom.pipelineStatus, `VCN pipeline failed: ${error.message}`, "alert");
   } finally {
-    dom.btnRunVCN.disabled = false;
+    setBusy(dom.btnRunVCN, false);
   }
 }
 
@@ -986,9 +1236,12 @@ async function restoreLiveState() {
 
     if (state.running) {
       setBadge(dom.streamBadge, "LIVE", "good");
-      dom.streamStatus.textContent = "Recovered existing live stream state.";
+      setStatus(dom.streamStatus, "Recovered the existing live stream state.", "good");
       connectEvents();
       startFrameLoop();
+    } else if (state.last_error) {
+      setBadge(dom.streamBadge, "WARN", "alert");
+      setStatus(dom.streamStatus, state.last_error, "alert");
     }
 
     if (dom.streamLogPath) {
